@@ -1,12 +1,30 @@
 <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="40" height="40" rx="20" fill="#18181B"/>
-<g clip-path="url(#clip0_15_2080)">
-<path d="M21.7784 11.7207L28.3803 28.2797H32.0007L25.3988 11.7207H21.7784Z" fill="white"/>
-<path d="M14.1194 21.727L16.3783 15.9078L18.6373 21.727H14.1194ZM14.4856 11.7207L7.88477 28.2797H11.5756L12.9255 24.8023H19.8313L21.1811 28.2797H24.8719L18.2711 11.7207H14.4856Z" fill="white"/>
-</g>
-<defs>
-<clipPath id="clip0_15_2080">
-<rect width="24" height="18" fill="white" transform="translate(8 11)"/>
-</clipPath>
-</defs>
+    <!-- Background with gradient -->
+    <rect width="40" height="40" rx="20" fill="url(#gradient)"/>
+    
+    <!-- AQ22 Text with shadow -->
+    <text 
+        x="20" 
+        y="25" 
+        text-anchor="middle" 
+        fill="white" 
+        font-family="Arial, sans-serif" 
+        font-weight="bold" 
+        font-size="14"
+        filter="url(#shadow)"
+    >
+        AQ22
+    </text>
+    
+    <!-- Definitions for gradient and shadow -->
+    <defs>
+        <linearGradient id="gradient" x1="0" y1="0" x2="40" y2="40">
+            <stop offset="0%" stop-color="#1E293B"/>
+            <stop offset="100%" stop-color="#0F172A"/>
+        </linearGradient>
+        
+        <filter id="shadow" x="-2" y="-2" width="44" height="44">
+            <feDropShadow dx="0" dy="1" stdDeviation="0.5" flood-opacity="0.3"/>
+        </filter>
+    </defs>
 </svg>

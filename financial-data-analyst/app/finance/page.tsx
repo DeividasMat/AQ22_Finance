@@ -603,10 +603,10 @@ export default function AIChat() {
                     </Avatar>
                     <div>
                       <CardTitle className="text-lg">
-                        Financial Assistant
+                        Financial Analyst
                       </CardTitle>
                       <CardDescription className="text-xs">
-                        Powered by Claude
+                        Powered by AQ22
                       </CardDescription>
                     </div>
                   </>
