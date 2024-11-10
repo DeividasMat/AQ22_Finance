@@ -256,62 +256,43 @@ const modelOptions: ModelOption[] = [
 
 ];
 
-export default function AIChat() {
+export default function FinancePage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<string>("claude-3-sonnet-20240229");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const chartEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedModel, setSelectedModel] = useState(models[0].id);
   const [currentUpload, setCurrentUpload] = useState<FileUpload | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
   const [currentChartIndex, setCurrentChartIndex] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const [isScrollLocked, setIsScrollLocked] = useState(false);
+  const chartEndRef = useRef<HTMLDivElement>(null);
 
+  // Simplified scroll observer effect
   useEffect(() => {
-    const scrollToBottom = () => {
-      if (!messagesEndRef.current) return;
+    if (!contentRef.current) return;
 
-      // Use requestAnimationFrame to ensure DOM has updated
-      requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "end",
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            // Handle scroll into view
+            scrollToChart(currentChartIndex);
+          }
         });
-      });
-    };
+      },
+      { threshold: 1.0 }
+    );
 
-    // Scroll when messages change or when loading state changes
-    const timeoutId = setTimeout(scrollToBottom, 100);
-
-    return () => clearTimeout(timeoutId);
-  }, [messages, isLoading]); // Add isLoading to dependencies
-
-  useEffect(() => {
-    if (!messagesEndRef.current) return;
-
-    const observer = new ResizeObserver(() => {
-      if (!isScrollLocked) {
-        messagesEndRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "end",
-        });
-      }
-    });
-
-    observer.observe(messagesEndRef.current);
-
+    observer.observe(contentRef.current);
     return () => observer.disconnect();
-  }, [isScrollLocked]);
+  }, []); // Remove isScrollLocked dependency
 
   const handleChartScroll = useCallback(() => {
     if (!contentRef.current) return;
-
-    const { scrollTop, clientHeight } = contentRef.current;
-    const newIndex = Math.round(scrollTop / clientHeight);
-    setCurrentChartIndex(newIndex);
+    // Your scroll handling logic
   }, []);
 
   const scrollToChart = (index: number) => {
@@ -430,126 +411,92 @@ export default function AIChat() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!input.trim() && !currentUpload) return;
-    if (isLoading) return;
+    console.log('Submit triggered', input); // Debug log
+    
+    if (!input.trim() && !currentUpload) {
+      console.log('No input or upload'); // Debug log
+      return;
+    }
 
-    setIsScrollLocked(true);
+    const messageId = Math.random().toString(36).substr(2, 9);
 
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
+    // Create the user message
+    const userMessage = {
+      id: messageId,
+      role: 'user',
       content: input,
-      file: currentUpload || undefined,
+      file: currentUpload,
     };
 
-    const thinkingMessage: Message = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: "thinking",
+    // Create thinking message
+    const thinkingMessage = {
+      id: messageId + '-thinking',
+      role: 'assistant',
+      content: 'thinking',
+      hasToolUse: false,
     };
 
-    // Update messages in a single state update
-    setMessages((prev) => [...prev, userMessage, thinkingMessage]);
-    setInput("");
+    // Update messages state immediately
+    setMessages(prev => [...prev, userMessage, thinkingMessage]);
+    setInput('');
+    setCurrentUpload(null);
     setIsLoading(true);
 
-    // Prepare all messages for the API request
-    const apiMessages = [...messages, userMessage].map((msg) => {
-      if (msg.file) {
-        if (msg.file.isText) {
-          // For text files, decode the content before sending
-          const decodedText = decodeURIComponent(atob(msg.file.base64));
-          return {
-            role: msg.role,
-            content: `File contents of ${msg.file.fileName}:\n\n${decodedText}\n\n${msg.content}`,
-          };
-        } else {
-          // Handle images as before
-          return {
-            role: msg.role,
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: msg.file.mediaType,
-                  data: msg.file.base64,
-                },
-              },
-              {
-                type: "text",
-                text: msg.content,
-              },
-            ],
-          };
-        }
-      }
-      // Handle text-only messages
-      return {
-        role: msg.role,
-        content: msg.content,
-      };
-    });
-
-    const selectedModelData = models.find(m => m.id === selectedModel);
-    
-    const requestBody = {
-      messages: apiMessages,
-      model: selectedModel,
-      provider: selectedModelData?.provider || 'anthropic'
-    };
-
     try {
+      const selectedModelData = models.find(m => m.id === selectedModel);
+      console.log('Sending request with model:', selectedModelData); // Debug log
+      
       const response = await fetch("/api/finance", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({
+          messages: [...messages, userMessage],
+          model: selectedModel,
+          provider: selectedModelData?.provider || 'anthropic',
+        }),
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error('Failed to get response');
       }
 
-      const data: APIResponse = await response.json();
+      const data = await response.json();
+      console.log('Received response:', data); // Debug log
 
-      setMessages((prev) => {
-        const newMessages = [...prev];
-        newMessages[newMessages.length - 1] = {
-          id: crypto.randomUUID(),
-          role: "assistant",
+      // Remove thinking message and add AI response
+      setMessages(prev => [
+        ...prev.filter(m => m.id !== thinkingMessage.id),
+        {
+          id: messageId + '-response',
+          role: 'assistant',
           content: data.content,
-          hasToolUse: data.hasToolUse || !!data.toolUse,
-          chartData:
-            data.chartData || (data.toolUse?.input as ChartData) || null,
-        };
-        return newMessages;
-      });
+          hasToolUse: data.hasToolUse,
+          chartData: data.chartData,
+        },
+      ]);
 
-      setCurrentUpload(null);
     } catch (error) {
-      console.error("Submit Error:", error);
-      setMessages((prev) => {
-        const newMessages = [...prev];
-        newMessages[newMessages.length - 1] = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: "I apologize, but I encountered an error. Please try again.",
-        };
-        return newMessages;
+      console.error('Error:', error);
+      // Remove thinking message and add error message
+      setMessages(prev => [
+        ...prev.filter(m => m.id !== thinkingMessage.id),
+        {
+          id: messageId + '-error',
+          role: 'assistant',
+          content: 'Sorry, there was an error processing your request.',
+          hasToolUse: false,
+        },
+      ]);
+      
+      toast({
+        title: "Error",
+        description: "Failed to get response from AI",
+        variant: "destructive",
       });
     } finally {
       setIsLoading(false);
-      setIsScrollLocked(false);
-
-      // Force a final scroll after state updates
-      requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "end",
-        });
-      });
     }
   };
 
@@ -725,6 +672,10 @@ export default function AIChat() {
                     type="submit"
                     disabled={isLoading || (!input.trim() && !currentUpload)}
                     className="h-[44px]"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleSubmit(e as any);
+                    }}
                   >
                     <Send className="h-4 w-4" />
                   </Button>
