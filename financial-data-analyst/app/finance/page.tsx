@@ -59,6 +59,7 @@ interface Message {
 type Model = {
   id: string;
   name: string;
+  provider: 'anthropic' | 'openai' | 'google';
 };
 
 interface FileUpload {
@@ -70,8 +71,15 @@ interface FileUpload {
 }
 
 const models: Model[] = [
-  { id: "claude-3-haiku-20240307", name: "Claude 3 Haiku" },
-  { id: "claude-3-5-sonnet-20240620", name: "Claude 3.5 Sonnet" },
+  { id: "claude-3-opus-20240229", name: "Claude 3 Opus", provider: 'anthropic' },
+  { id: "claude-3-sonnet-20240229", name: "Claude 3 Sonnet", provider: 'anthropic' },
+  { id: "claude-3-haiku-20240307", name: "Claude 3 Haiku", provider: 'anthropic' },
+  { id: "gpt-4-turbo-preview", name: "GPT-4 Turbo", provider: 'openai' },
+  { id: "gpt-4", name: "GPT-4", provider: 'openai' },
+  { id: "gpt-4o", name: "GPT-4o", provider: 'openai' },
+  { id: "gpt-4o-mini", name: "GPT-4o-mini", provider: 'openai' },
+  { id: "gpt-3.5-turbo", name: "GPT-3.5 Turbo", provider: 'openai' },
+  { id: "gemini-pro", name: "Gemini Pro", provider: 'google' },
 ];
 
 // Updated APIResponse interface
@@ -193,13 +201,66 @@ const ChartPagination = ({
   </div>
 );
 
+// Add this type definition
+type ModelOption = {
+  value: string;
+  label: string;
+  provider: 'anthropic' | 'openai' | 'google';
+};
+
+// Add model options
+const modelOptions: ModelOption[] = [
+  // Anthropic Models
+  {
+    value: 'claude-3-opus-20240229',
+    label: 'Claude 3 Opus',
+    provider: 'anthropic'
+  },
+  {
+    value: 'claude-3-sonnet-20240229',
+    label: 'Claude 3 Sonnet',
+    provider: 'anthropic'
+  },
+  // OpenAI Models
+  {
+    value: 'gpt-4-turbo-preview',
+    label: 'GPT-4 Turbo',
+    provider: 'openai'
+  },
+  {
+    value: 'gpt-4',
+    label: 'GPT-4',
+    provider: 'openai'
+  },
+  {
+    value: 'gpt-4o',
+    label: 'GPT-4o',
+    provider: 'openai'
+  },
+  {
+    value: 'gpt-4o-mini',
+    label: 'GPT-4o-mini',
+    provider: 'openai'
+  },
+  {
+    value: 'gpt-3.5-turbo',
+    label: 'GPT-3.5 Turbo',
+    provider: 'openai'
+  },
+  // Google Models
+  {
+    value: 'gemini-pro',
+    label: 'Gemini Pro',
+    provider: 'google'
+  },
+
+];
+
 export default function AIChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(
-    "claude-3-5-sonnet-20240620",
-  );
+  const [selectedModel, setSelectedModel] = useState<string>("claude-3-sonnet-20240229");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chartEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -430,9 +491,12 @@ export default function AIChat() {
       };
     });
 
+    const selectedModelData = models.find(m => m.id === selectedModel);
+    
     const requestBody = {
       messages: apiMessages,
       model: selectedModel,
+      provider: selectedModelData?.provider || 'anthropic'
     };
 
     try {

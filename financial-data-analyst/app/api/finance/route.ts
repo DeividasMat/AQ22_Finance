@@ -2,11 +2,19 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChartData } from "@/types/chart";
+import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Initialize Anthropic client with correct headers
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY!);
 
 export const runtime = "edge";
 
@@ -100,9 +108,12 @@ const tools: ToolSchema[] = [
   },
 ];
 
+// Add type for API selection
+type AIProvider = 'anthropic' | 'openai' | 'google';
+
 export async function POST(req: NextRequest) {
   try {
-    const { messages, fileData, model } = await req.json();
+    const { messages, fileData, model, provider = 'anthropic' } = await req.json();
 
     console.log("🔍 Initial Request Data:", {
       hasMessages: !!messages,
@@ -110,356 +121,269 @@ export async function POST(req: NextRequest) {
       hasFileData: !!fileData,
       fileType: fileData?.mediaType,
       model,
+      provider
     });
 
-    // Input validation
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(
-        JSON.stringify({ error: "Messages array is required" }),
-        { status: 400 },
-      );
-    }
+    let response;
 
-    if (!model) {
-      return new Response(
-        JSON.stringify({ error: "Model selection is required" }),
-        { status: 400 },
-      );
-    }
-
-    // Convert all previous messages
-    let anthropicMessages = messages.map((msg: any) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
-
-    // Handle file in the latest message
-    if (fileData) {
-      const { base64, mediaType, isText } = fileData;
-
-      if (!base64) {
-        console.error("❌ No base64 data received");
-        return new Response(JSON.stringify({ error: "No file data" }), {
-          status: 400,
-        });
-      }
-
-      try {
-        if (isText) {
-          // Decode base64 text content
-          const textContent = decodeURIComponent(escape(atob(base64)));
-
-          // Replace only the last message with the file content
-          anthropicMessages[anthropicMessages.length - 1] = {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `File contents of ${fileData.fileName}:\n\n${textContent}`,
-              },
-              {
-                type: "text",
-                text: messages[messages.length - 1].content,
-              },
-            ],
-          };
-        } else if (mediaType.startsWith("image/")) {
-          // Handle image files
-          anthropicMessages[anthropicMessages.length - 1] = {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: mediaType,
-                  data: base64,
+    switch (provider) {
+      case 'openai':
+        // Convert messages to OpenAI format
+        const openaiMessages = messages.map((msg: any) => {
+          // Handle messages with files
+          if (msg.file && msg.file.mediaType?.startsWith("image/")) {
+            return {
+              role: msg.role,
+              content: [
+                {
+                  type: "text",
+                  text: msg.content
                 },
-              },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:${msg.file.mediaType};base64,${msg.file.base64}`
+                  }
+                }
+              ]
+            };
+          }
+          
+          // Handle regular text messages
+          return {
+            role: msg.role,
+            content: msg.content
+          };
+        });
+
+        // Handle the latest file upload if present
+        if (fileData && fileData.mediaType?.startsWith("image/")) {
+          const lastMessage = openaiMessages[openaiMessages.length - 1];
+          openaiMessages[openaiMessages.length - 1] = {
+            role: "user",
+            content: [
               {
                 type: "text",
-                text: messages[messages.length - 1].content,
+                text: lastMessage.content
               },
-            ],
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:${fileData.mediaType};base64,${fileData.base64}`
+                }
+              }
+            ]
           };
         }
-      } catch (error) {
-        console.error("Error processing file content:", error);
+
+        console.log("OpenAI Request:", {
+          model,
+          messages: openaiMessages.map(m => ({
+            role: m.role,
+            contentTypes: Array.isArray(m.content) 
+              ? m.content.map(c => c.type)
+              : 'text'
+          }))
+        });
+
+        // Make sure to use a vision-capable model
+        const openaiResponse = await openai.chat.completions.create({
+          model: model === 'gpt-4' ? 'gpt-4-vision-preview' : model,
+          messages: openaiMessages,
+          max_tokens: 4096,
+          temperature: 0.7,
+        });
+
         return new Response(
-          JSON.stringify({ error: "Failed to process file content" }),
-          { status: 400 },
+          JSON.stringify({
+            content: openaiResponse.choices[0].message.content,
+            hasToolUse: false
+          })
         );
-      }
-    }
 
-    console.log("🚀 Final Anthropic API Request:", {
-      endpoint: "messages.create",
-      model,
-      max_tokens: 4096,
-      temperature: 0.7,
-      messageCount: anthropicMessages.length,
-      tools: tools.map((t) => t.name),
-      messageStructure: JSON.stringify(
-        anthropicMessages.map((msg) => ({
-          role: msg.role,
-          content:
-            typeof msg.content === "string"
-              ? msg.content.slice(0, 50) + "..."
-              : "[Complex Content]",
-        })),
-        null,
-        2,
-      ),
-    });
+      case 'google':
+        const geminiModel = genAI.getGenerativeModel({ model: model });
+        
+        // Handle image for Google
+        let geminiContent;
+        const lastMessage = messages[messages.length - 1];
+        
+        if (lastMessage.file?.mediaType?.startsWith("image/")) {
+          geminiContent = {
+            contents: [{
+              role: 'user',
+              parts: [
+                { text: lastMessage.content },
+                {
+                  inlineData: {
+                    mimeType: lastMessage.file.mediaType,
+                    data: lastMessage.file.base64
+                  }
+                }
+              ]
+            }]
+          };
+        } else {
+          geminiContent = {
+            contents: [{
+              role: 'user',
+              parts: [{ text: lastMessage.content }]
+            }]
+          };
+        }
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 4096,
-      temperature: 0.7,
-      tools: tools,
-      tool_choice: { type: "auto" },
-      messages: anthropicMessages,
-      system: `You are a financial data visualization expert. Your role is to analyze financial data and create clear, meaningful visualizations using generate_graph_data tool:
+        const geminiResponse = await geminiModel.generateContent(geminiContent);
+        const result = await geminiResponse.response;
 
-Here are the chart types available and their ideal use cases:
+        return new Response(
+          JSON.stringify({
+            content: result.text(),
+            hasToolUse: false
+          })
+        );
 
-1. LINE CHARTS ("line")
-   - Time series data showing trends
-   - Financial metrics over time
-   - Market performance tracking
-
-2. BAR CHARTS ("bar")
-   - Single metric comparisons
-   - Period-over-period analysis
-   - Category performance
-
-3. MULTI-BAR CHARTS ("multiBar")
-   - Multiple metrics comparison
-   - Side-by-side performance analysis
-   - Cross-category insights
-
-4. AREA CHARTS ("area")
-   - Volume or quantity over time
-   - Cumulative trends
-   - Market size evolution
-
-5. STACKED AREA CHARTS ("stackedArea")
-   - Component breakdowns over time
-   - Portfolio composition changes
-   - Market share evolution
-
-6. PIE CHARTS ("pie")
-   - Distribution analysis
-   - Market share breakdown
-   - Portfolio allocation
-
-When generating visualizations:
-1. Structure data correctly based on the chart type
-2. Use descriptive titles and clear descriptions
-3. Include trend information when relevant (percentage and direction)
-4. Add contextual footer notes
-5. Use proper data keys that reflect the actual metrics
-
-Data Structure Examples:
-
-For Time-Series (Line/Bar/Area):
-{
-  data: [
-    { period: "Q1 2024", revenue: 1250000 },
-    { period: "Q2 2024", revenue: 1450000 }
-  ],
-  config: {
-    xAxisKey: "period",
-    title: "Quarterly Revenue",
-    description: "Revenue growth over time"
-  },
-  chartConfig: {
-    revenue: { label: "Revenue ($)" }
-  }
-}
-
-For Comparisons (MultiBar):
-{
-  data: [
-    { category: "Product A", sales: 450000, costs: 280000 },
-    { category: "Product B", sales: 650000, costs: 420000 }
-  ],
-  config: {
-    xAxisKey: "category",
-    title: "Product Performance",
-    description: "Sales vs Costs by Product"
-  },
-  chartConfig: {
-    sales: { label: "Sales ($)" },
-    costs: { label: "Costs ($)" }
-  }
-}
-
-For Distributions (Pie):
-{
-  data: [
-    { segment: "Equities", value: 5500000 },
-    { segment: "Bonds", value: 3200000 }
-  ],
-  config: {
-    xAxisKey: "segment",
-    title: "Portfolio Allocation",
-    description: "Current investment distribution",
-    totalLabel: "Total Assets"
-  },
-  chartConfig: {
-    equities: { label: "Equities" },
-    bonds: { label: "Bonds" }
-  }
-}
-
-Always:
-- Generate real, contextually appropriate data
-- Use proper financial formatting
-- Include relevant trends and insights
-- Structure data exactly as needed for the chosen chart type
-- Choose the most appropriate visualization for the data
-
-Never:
-- Use placeholder or static data
-- Announce the tool usage
-- Include technical implementation details in responses
-- NEVER SAY you are using the generate_graph_data tool, just execute it when needed.
-
-Focus on clear financial insights and let the visualization enhance understanding.`,
-    });
-
-    console.log("✅ Anthropic API Response received:", {
-      status: "success",
-      stopReason: response.stop_reason,
-      hasToolUse: response.content.some((c) => c.type === "tool_use"),
-      contentTypes: response.content.map((c) => c.type),
-      contentLength:
-        response.content[0].type === "text"
-          ? response.content[0].text.length
-          : 0,
-      toolOutput: response.content.find((c) => c.type === "tool_use")
-        ? JSON.stringify(
-            response.content.find((c) => c.type === "tool_use"),
-            null,
-            2,
-          )
-        : "No tool used",
-    });
-
-    const toolUseContent = response.content.find((c) => c.type === "tool_use");
-    const textContent = response.content.find((c) => c.type === "text");
-
-    const processToolResponse = (toolUseContent: any) => {
-      if (!toolUseContent) return null;
-
-      const chartData = toolUseContent.input as ChartToolResponse;
-
-      if (
-        !chartData.chartType ||
-        !chartData.data ||
-        !Array.isArray(chartData.data)
-      ) {
-        throw new Error("Invalid chart data structure");
-      }
-
-      // Transform data for pie charts to match expected structure
-      if (chartData.chartType === "pie") {
-        // Ensure data items have 'segment' and 'value' keys
-        chartData.data = chartData.data.map((item) => {
-          // Find the first key in chartConfig (e.g., 'sales')
-          const valueKey = Object.keys(chartData.chartConfig)[0];
-          const segmentKey = chartData.config.xAxisKey || "segment";
-
+      case 'anthropic':
+      default:
+        // Process messages for Anthropic
+        let anthropicMessages = messages.map((msg: any) => {
+          if (msg.file) {
+            if (msg.file.isText) {
+              return {
+                role: msg.role,
+                content: `File contents of ${msg.file.fileName}:\n\n${decodeURIComponent(atob(msg.file.base64))}\n\n${msg.content}`
+              };
+            } else {
+              return {
+                role: msg.role,
+                content: [
+                  {
+                    type: "image",
+                    source: {
+                      type: "base64",
+                      media_type: msg.file.mediaType,
+                      data: msg.file.base64,
+                    }
+                  },
+                  {
+                    type: "text",
+                    text: msg.content
+                  }
+                ]
+              };
+            }
+          }
           return {
-            segment:
-              item[segmentKey] || item.segment || item.category || item.name,
-            value: item[valueKey] || item.value,
+            role: msg.role,
+            content: msg.content
           };
         });
 
-        // Ensure xAxisKey is set to 'segment' for consistency
-        chartData.config.xAxisKey = "segment";
-      }
+        // Handle file in the latest message if present
+        if (fileData) {
+          const { base64, mediaType, isText, fileName } = fileData;
+          if (base64) {
+            try {
+              if (isText) {
+                const textContent = decodeURIComponent(atob(base64));
+                anthropicMessages[anthropicMessages.length - 1] = {
+                  role: "user",
+                  content: `File contents of ${fileName}:\n\n${textContent}\n\n${messages[messages.length - 1].content}`
+                };
+              } else if (mediaType.startsWith("image/")) {
+                anthropicMessages[anthropicMessages.length - 1] = {
+                  role: "user",
+                  content: [
+                    {
+                      type: "image",
+                      source: {
+                        type: "base64",
+                        media_type: mediaType,
+                        data: base64,
+                      }
+                    },
+                    {
+                      type: "text",
+                      text: messages[messages.length - 1].content
+                    }
+                  ]
+                };
+              }
+            } catch (error) {
+              console.error("Error processing file content:", error);
+              return new Response(
+                JSON.stringify({ error: "Failed to process file content" }),
+                { status: 400 }
+              );
+            }
+          }
+        }
 
-      // Create new chartConfig with system color variables
-      const processedChartConfig = Object.entries(chartData.chartConfig).reduce(
-        (acc, [key, config], index) => ({
-          ...acc,
-          [key]: {
-            ...config,
-            // Assign color variables sequentially
-            color: `hsl(var(--chart-${index + 1}))`,
-          },
-        }),
-        {},
-      );
+        console.log("🚀 Anthropic API Request:", {
+          model,
+          messageCount: anthropicMessages.length
+        });
 
-      return {
-        ...chartData,
-        chartConfig: processedChartConfig,
-      };
-    };
+        const anthropicResponse = await anthropic.messages.create({
+          model,
+          max_tokens: 4096,
+          temperature: 0.7,
+          messages: anthropicMessages,
+          system: "You are a helpful AI assistant."
+        });
 
-    const processedChartData = toolUseContent
-      ? processToolResponse(toolUseContent)
-      : null;
+        return new Response(
+          JSON.stringify({
+            content: typeof anthropicResponse.content === 'string' 
+              ? anthropicResponse.content 
+              : anthropicResponse.content[0].text,
+            hasToolUse: false
+          })
+        );
+    }
 
-    return new Response(
-      JSON.stringify({
-        content: textContent?.text || "",
-        hasToolUse: response.content.some((c) => c.type === "tool_use"),
-        toolUse: toolUseContent,
-        chartData: processedChartData,
-      }),
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-cache",
-        },
-      },
-    );
   } catch (error) {
     console.error("❌ Finance API Error: ", error);
     console.error("Full error details:", {
       name: error instanceof Error ? error.name : "Unknown",
       message: error instanceof Error ? error.message : "Unknown error",
       stack: error instanceof Error ? error.stack : undefined,
-      headers: error instanceof Error ? (error as any).headers : undefined,
-      response: error instanceof Error ? (error as any).response : undefined,
     });
 
-    // Add specific error handling for different scenarios
     if (error instanceof Anthropic.APIError) {
       return new Response(
         JSON.stringify({
-          error: "API Error",
+          error: "Anthropic API Error",
           details: error.message,
-          code: error.status,
         }),
-        { status: error.status },
+        { status: 500 }
       );
     }
 
-    if (error instanceof Anthropic.AuthenticationError) {
+    if (error instanceof OpenAI.APIError) {
       return new Response(
         JSON.stringify({
-          error: "Authentication Error",
-          details: "Invalid API key or authentication failed",
+          error: "OpenAI API Error",
+          details: error.message,
         }),
-        { status: 401 },
+        { status: 500 }
+      );
+    }
+
+    if (error.constructor.name === 'GoogleGenerativeAIError') {
+      return new Response(
+        JSON.stringify({
+          error: "Google Generative AI Error",
+          details: error.message,
+        }),
+        { status: 500 }
       );
     }
 
     return new Response(
       JSON.stringify({
-        error:
-          error instanceof Error ? error.message : "An unknown error occurred",
+        error: error instanceof Error ? error.message : "An unknown error occurred",
       }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      },
+      { status: 500 }
     );
   }
 }
